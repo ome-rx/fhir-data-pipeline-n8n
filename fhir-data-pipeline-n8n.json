@@ -1,0 +1,873 @@
+{
+  "name": "fhir-data-pipeline-n8n",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes"
+            }
+          ]
+        }
+      },
+      "id": "f767c543-7886-4b17-91b0-3fe0ed42391f",
+      "name": "Every 30 Minutes1",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -3504,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "sync_status",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "batch_id",
+              "fieldValue": "={{ $('Initialize Batch').item.json.batch_id }}"
+            }
+          ]
+        }
+      },
+      "id": "f5bb4fc9-3bc6-48ea-a6b1-d329b58dd182",
+      "name": "Create Sync Status1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -3056,
+        752
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "UKAVWfqOUk0FNFVw",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "pipeline_audit_log",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "operation_type",
+              "fieldValue": "batch_start"
+            },
+            {
+              "fieldId": "resource_type",
+              "fieldValue": "={{ $('Initialize Batch').item.json.resource_type }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "info"
+            },
+            {
+              "fieldId": "sync_batch_id",
+              "fieldValue": "={{ $('Initialize Batch').item.json.batch_id }}"
+            },
+            {
+              "fieldId": "metadata",
+              "fieldValue": "={{ { \"message\": \"Batch initiated\" } }}"
+            }
+          ]
+        }
+      },
+      "id": "12e717bc-b555-45a9-b3cc-8ba79a0297cf",
+      "name": "Log Batch Start1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -2832,
+        752
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "UKAVWfqOUk0FNFVw",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enhanced FHIR Bundle processing with execution timing\nconst startTime = Date.now();\nconst input = $input.all()[0].json;\n// Corrected node name reference below\nconst batchInfo = $('Initialize Batch').all()[0].json; \n\nconsole.log('Processing FHIR response...');\nconsole.log('Status Code:', input.statusCode);\n\n// Check for HTTP errors\nif (input.statusCode && input.statusCode >= 400) {\n  const executionTime = Date.now() - startTime;\n  console.log('HTTP Error detected:', input.statusCode);\n  return [{ json: { \n    error: true, \n    message: `HTTP Error ${input.statusCode}`,\n    details: input.body || 'No details available',\n    execution_time_ms: executionTime,\n    batch_id: batchInfo.batch_id\n  }}];\n}\n\n// ---- CORRECTED LINE ----\n// Extract response body from input.data instead of input.body\nlet responseBody = input.data;\n// ----------------------\n\nif (typeof responseBody === 'string') {\n  try {\n    responseBody = JSON.parse(responseBody);\n  } catch (error) {\n    const executionTime = Date.now() - startTime;\n    console.log('Failed to parse response body as JSON');\n    return [{ json: { \n      error: true, \n      message: 'Failed to parse FHIR response',\n      details: error.message,\n      execution_time_ms: executionTime,\n      batch_id: batchInfo.batch_id\n    }}];\n  }\n}\n\nlet bundle = responseBody;\n\n// Validate bundle structure\nif (!bundle || bundle.resourceType !== 'Bundle') {\n  const executionTime = Date.now() - startTime;\n  console.log('Invalid bundle response:', bundle?.resourceType);\n  return [{ json: { \n    error: true, \n    message: 'Invalid FHIR Bundle response', \n    received_type: bundle?.resourceType || 'unknown',\n    execution_time_ms: executionTime,\n    batch_id: batchInfo.batch_id\n  }}];\n}\n\nconsole.log(`Bundle type: ${bundle.type}`);\nconsole.log(`Total entries: ${bundle.entry?.length || 0}`);\n\nif (!bundle.entry || bundle.entry.length === 0) {\n  const executionTime = Date.now() - startTime;\n  console.log('No entries found in bundle');\n  return [{ json: { \n    message: 'No patient entries found in bundle', \n    total: bundle.total || 0,\n    has_next: false,\n    entry_count: 0,\n    completed: true,\n    execution_time_ms: executionTime,\n    batch_id: batchInfo.batch_id\n  }}];\n}\n\n// Find pagination links\nconst links = bundle.link || [];\nconst nextLink = links.find(l => l.relation === 'next');\nconst selfLink = links.find(l => l.relation === 'self');\n\nconsole.log(`Processing ${bundle.entry.length} patient entries`);\nconsole.log(`Has next page: ${!!nextLink}`);\nif (nextLink) {\n  console.log(`Next URL: ${nextLink.url}`);\n}\n\nconst executionTime = Date.now() - startTime;\n\n// Process each entry with bundle context\nconst results = bundle.entry.map((entry, index) => {\n  const enhancedEntry = {\n    ...entry,\n    bundle_info: {\n      total: bundle.total,\n      has_next: !!nextLink,\n      next_url: nextLink?.url,\n      self_url: selfLink?.url,\n      current_entry: index + 1,\n      entry_count: bundle.entry.length,\n      batch_id: batchInfo.batch_id,\n      current_page: batchInfo.current_page,\n      source_system: batchInfo.source_system,\n      execution_time_ms: executionTime,\n      timestamp: new Date().toISOString()\n    }\n  };\n\n  return { json: enhancedEntry };\n});\n\nconsole.log(`Successfully processed ${results.length} entries in ${executionTime}ms`);\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2384,
+        672
+      ],
+      "id": "594c4665-bf2d-4609-aa83-e7a8b7100640",
+      "name": "Extract Bundle Entries1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transform patient data for existing database schema\nconst startTime = Date.now();\nconst allItems = $input.all();\nconsole.log(`Transform: Processing ${allItems.length} patient records`);\n\nconst results = [];\n\nfor (let i = 0; i < allItems.length; i++) {\n  const entry = allItems[i].json;\n  \n  // Handle error entries\n  if (entry.error) {\n    results.push({ \n      error: true, \n      message: entry.message,\n      details: entry.details,\n      batch_id: entry.batch_id,\n      execution_time_ms: entry.execution_time_ms,\n      processing_order: i + 1\n    });\n    continue;\n  }\n\n  // Handle completion entries\n  if (entry.completed) {\n    results.push({\n      batch_id: entry.batch_id,\n      message: entry.message,\n      completed: true,\n      execution_time_ms: entry.execution_time_ms,\n      processing_order: i + 1\n    });\n    continue;\n  }\n\n  const patient = entry.resource;\n\n  // Validate patient resource\n  if (!patient || patient.resourceType !== 'Patient') {\n    results.push({ \n      error: true, \n      message: 'Invalid patient resource',\n      resource_type: patient?.resourceType,\n      resource_id: patient?.id,\n      batch_id: entry.bundle_info?.batch_id,\n      processing_order: i + 1\n    });\n    continue;\n  }\n\n  // Calculate data quality score\n  let qualityScore = 1.0;\n  let errors = [];\n  let warnings = [];\n  let dataFlags = [];\n\n  // Validate required fields\n  if (!patient.id) {\n    errors.push('Missing patient ID');\n    qualityScore -= 0.3;\n  }\n\n  // Extract name data\n  const names = patient.name || [];\n  const primaryName = names.find(n => n.use === 'official') || names[0] || {};\n  const familyName = primaryName.family || '';\n  const givenNames = (primaryName.given || []).join(' ');\n  \n  // Test data detection\n  const testDataPatterns = [\n    /^(test|sample|demo)/i,\n    /^\\d+$/,\n    /^[a-z]\\d+$/i,\n    /patient\\d+/i\n  ];\n  \n  const isTestData = testDataPatterns.some(pattern => \n    pattern.test(familyName) || pattern.test(givenNames)\n  );\n  \n  if (isTestData) {\n    dataFlags.push('test_data_pattern');\n    warnings.push('Appears to be test data');\n    qualityScore -= 0.2;\n  }\n\n  // Validate demographics\n  if (!patient.name || patient.name.length === 0) {\n    warnings.push('Missing patient name');\n    qualityScore -= 0.2;\n  }\n\n  if (!patient.gender) {\n    warnings.push('Missing gender');\n    qualityScore -= 0.1;\n  }\n\n  if (!patient.birthDate) {\n    warnings.push('Missing birth date');\n    qualityScore -= 0.15;\n  }\n\n  if (!patient.telecom || patient.telecom.length === 0) {\n    warnings.push('Missing contact information');\n    qualityScore -= 0.1;\n  }\n\n  if (!patient.address || patient.address.length === 0) {\n    warnings.push('Missing address information');\n    qualityScore -= 0.1;\n  }\n\n  if (!patient.identifier || patient.identifier.length === 0) {\n    warnings.push('Missing patient identifier');\n    qualityScore -= 0.05;\n  }\n\n  // Ensure quality score bounds\n  qualityScore = Math.max(0, Math.min(1, qualityScore));\n\n  // Extract contact info\n  const telecom = patient.telecom || [];\n  const phoneContacts = telecom.filter(t => t.system === 'phone');\n  const emailContacts = telecom.filter(t => t.system === 'email');\n  \n  // Extract address info\n  const addresses = patient.address || [];\n  const primaryAddress = addresses.find(a => a.use === 'home') || addresses[0] || {};\n  \n  // Create comprehensive patient data object for JSONB storage\n  const patientData = {\n    // Core FHIR data (complete patient resource)\n    fhir_resource: patient,\n    \n    // Extracted/computed fields for easy querying\n    demographics: {\n      family_name: familyName,\n      given_names: givenNames,\n      full_name: `${givenNames} ${familyName}`.trim(),\n      gender: patient.gender,\n      birth_date: patient.birthDate,\n      marital_status: patient.maritalStatus?.coding?.[0]?.display,\n      language: patient.communication?.[0]?.language?.coding?.[0]?.display\n    },\n    \n    identifiers: patient.identifier?.map(id => ({\n      system: id.system,\n      value: id.value,\n      type: id.type?.coding?.[0]?.display,\n      use: id.use\n    })) || [],\n    \n    contact_info: {\n      phones: phoneContacts.map(p => ({ value: p.value, use: p.use })),\n      emails: emailContacts.map(e => ({ value: e.value, use: e.use })),\n      telecom_count: telecom.length\n    },\n    \n    addresses: addresses.map(addr => ({\n      line: addr.line?.join(', '),\n      city: addr.city,\n      state: addr.state,\n      postal_code: addr.postalCode,\n      country: addr.country,\n      use: addr.use,\n      type: addr.type\n    })),\n    \n    // Data quality metrics\n    quality_metrics: {\n      data_quality_score: Number(qualityScore.toFixed(2)),\n      validation_errors: errors,\n      validation_warnings: warnings,\n      data_flags: dataFlags,\n      is_test_data: isTestData,\n      completeness_flags: {\n        has_birth_date: !!patient.birthDate,\n        has_phone: phoneContacts.length > 0,\n        has_email: emailContacts.length > 0,\n        has_address: addresses.length > 0,\n        has_identifier: patient.identifier?.length > 0,\n        has_multiple_names: names.length > 1,\n        has_multiple_addresses: addresses.length > 1\n      }\n    },\n    \n    // Processing metadata\n    processing_info: {\n      batch_id: entry.bundle_info?.batch_id,\n      processing_order: entry.bundle_info?.current_entry,\n      source_system: entry.bundle_info?.source_system,\n      fhir_version: 'R4',\n      processed_at: new Date().toISOString(),\n      last_updated: patient.meta?.lastUpdated,\n      version_id: patient.meta?.versionId\n    },\n    \n    // Pagination info\n    pagination_info: {\n      has_next_page: entry.bundle_info?.has_next,\n      next_url: entry.bundle_info?.next_url,\n      current_page: entry.bundle_info?.current_page,\n      total_in_bundle: entry.bundle_info?.total\n    }\n  };\n\n  // Create record for database insertion\n  const transformedRecord = {\n    fhir_id: patient.id,\n    patient_data: patientData,\n    data_quality_score: Number(qualityScore.toFixed(2)),\n    source_system: entry.bundle_info?.source_system || 'smart_on_fhir',\n    sync_batch_id: entry.bundle_info?.batch_id,\n    \n    // Additional fields for processing\n    processing_order: entry.bundle_info?.current_entry,\n    has_next_page: entry.bundle_info?.has_next,\n    next_url: entry.bundle_info?.next_url,\n    current_page: entry.bundle_info?.current_page,\n    validation_errors: errors,\n    validation_warnings: warnings,\n    is_test_data: isTestData\n  };\n\n  results.push(transformedRecord);\n}\n\nconst executionTime = Date.now() - startTime;\nconsole.log(`Transform completed in ${executionTime}ms: ${results.length} items processed`);\nconsole.log(`Valid patients: ${results.filter(r => !r.error && !r.completed).length}`);\nconsole.log(`Errors: ${results.filter(r => r.error).length}`);\n\nreturn results.map(item => ({ json: {...item, execution_time_ms: executionTime} }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2160,
+        672
+      ],
+      "id": "b3948068-f7b9-4155-ad18-dfd4c3808bc2",
+      "name": "Transform & Validate Patient1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "error_condition",
+              "leftValue": "={{$json.error}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "completed_condition",
+              "leftValue": "={{$json.completed}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "2fbfbeb6-c5b1-4f37-83c0-a4cdd7f1fa7b",
+      "name": "Filter Errors & Completed1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1936,
+        672
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "patient_records",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "fhir_id",
+              "fieldValue": "={{ $json.fhir_id }}"
+            },
+            {
+              "fieldId": "patient_data",
+              "fieldValue": "={{ $json.patient_data }}"
+            },
+            {
+              "fieldId": "data_quality_score",
+              "fieldValue": "={{ $json.data_quality_score }}"
+            },
+            {
+              "fieldId": "source_system",
+              "fieldValue": "={{ $json.source_system }}"
+            },
+            {
+              "fieldId": "sync_batch_id",
+              "fieldValue": "={{ $json.sync_batch_id }}"
+            }
+          ]
+        }
+      },
+      "id": "23cf0ce0-bbbc-4d06-8930-43f443a0e209",
+      "name": "Insert Patients to Supabase1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -1728,
+        544
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "UKAVWfqOUk0FNFVw",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "pipeline_audit_log",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "operation_type",
+              "fieldValue": "store"
+            },
+            {
+              "fieldId": "resource_type",
+              "fieldValue": "Patient"
+            },
+            {
+              "fieldId": "resource_id",
+              "fieldValue": "={{ $json.fhir_id }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "success"
+            },
+            {
+              "fieldId": "execution_time_ms",
+              "fieldValue": "={{ $json.execution_time_ms }}"
+            },
+            {
+              "fieldId": "sync_batch_id",
+              "fieldValue": "={{ $json.sync_batch_id }}"
+            },
+            {
+              "fieldId": "metadata",
+              "fieldValue": "={{ { \"data_quality_score\": $json.data_quality_score, \"is_test_data\": $json.is_test_data } }}"
+            }
+          ]
+        }
+      },
+      "id": "46026835-92a0-43ee-9eae-459583869e65",
+      "name": "Audit Successful Records1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -1488,
+        672
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "UKAVWfqOUk0FNFVw",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enhanced pagination detection with proper last item detection\nconst currentAuditItem = $json;\n\nconsole.log('Processing audit item:', currentAuditItem.resource_id);\n\n// Get all transformed patient data from the Transform node\nconst allTransformedItems = $('Transform & Validate Patient1').all()\n  .filter(item => !item.json.error && !item.json.completed);\n\nconsole.log(`Found ${allTransformedItems.length} valid transformed items`);\n\nif (allTransformedItems.length === 0) {\n  console.log('No valid transformed items found for pagination check');\n  return null;\n}\n\n// Get the current audit item's position by counting how many audit records \n// have been processed including this one\nconst allCurrentAuditItems = $input.all();\nconst currentItemPosition = allCurrentAuditItems.length;\nconst expectedTotalItems = allTransformedItems.length;\n\nconsole.log(`Current audit position: ${currentItemPosition}/${expectedTotalItems}`);\n\n// Check if this is the last item by comparing position to expected total\nconst isLastAuditItem = currentItemPosition === expectedTotalItems;\n\nif (isLastAuditItem) {\n  console.log('Last audit item detected, generating batch summary');\n  \n  // Find the corresponding transformed item to get pagination info\n  const correspondingTransformedItem = allTransformedItems.find(item => \n    item.json.fhir_id === currentAuditItem.resource_id\n  );\n  \n  if (!correspondingTransformedItem) {\n    console.log('Warning: Could not find corresponding transformed item');\n    // Still proceed with available data\n  }\n  \n  // Calculate batch statistics from transformed data\n  const validItems = allTransformedItems.filter(item => item.json.fhir_id);\n  const qualityScores = validItems.map(item => item.json.data_quality_score || 0);\n  \n  const batchStats = {\n    total_items: validItems.length,\n    successful_records: currentItemPosition, // Number of items that made it through audit\n    failed_records: Math.max(0, validItems.length - currentItemPosition),\n    high_quality_items: validItems.filter(item => (item.json.data_quality_score || 0) > 0.8).length,\n    test_data_items: validItems.filter(item => item.json.is_test_data === true).length,\n    avg_quality_score: qualityScores.length > 0 ? \n      qualityScores.reduce((sum, score) => sum + score, 0) / qualityScores.length : 0,\n    quality_distribution: {\n      excellent: validItems.filter(item => (item.json.data_quality_score || 0) >= 0.9).length,\n      good: validItems.filter(item => {\n        const score = item.json.data_quality_score || 0;\n        return score >= 0.7 && score < 0.9;\n      }).length,\n      fair: validItems.filter(item => {\n        const score = item.json.data_quality_score || 0;\n        return score >= 0.5 && score < 0.7;\n      }).length,\n      poor: validItems.filter(item => (item.json.data_quality_score || 0) < 0.5).length\n    }\n  };\n  \n  // Get pagination info from any transformed item (they should all have the same pagination info)\n  const sampleTransformedItem = correspondingTransformedItem || allTransformedItems[0];\n  \n  const paginationInfo = {\n    has_next_page: sampleTransformedItem.json.has_next_page || false,\n    next_url: sampleTransformedItem.json.next_url || null,\n    current_page: sampleTransformedItem.json.current_page || 1\n  };\n  \n  // Get batch info from the transformed data\n  const batchInfo = {\n    sync_batch_id: sampleTransformedItem.json.sync_batch_id,\n    source_system: sampleTransformedItem.json.source_system || 'smart_on_fhir'\n  };\n  \n  const summary = {\n    sync_batch_id: batchInfo.sync_batch_id,\n    is_last_item: true,\n    total_processed_this_batch: validItems.length,\n    has_next_page: paginationInfo.has_next_page,\n    next_url: paginationInfo.next_url,\n    current_page: parseInt(paginationInfo.current_page) || 1,\n    batch_statistics: batchStats,\n    source_system: batchInfo.source_system,\n    processing_summary: {\n      audit_records_processed: currentItemPosition,\n      transform_records_available: allTransformedItems.length,\n      last_processed_resource_id: currentAuditItem.resource_id,\n      batch_completion_time: new Date().toISOString(),\n      processing_match: currentItemPosition === expectedTotalItems\n    }\n  };\n  \n  console.log('Batch summary generated:', {\n    total_items: summary.total_processed_this_batch,\n    has_next: summary.has_next_page,\n    avg_quality: summary.batch_statistics.avg_quality_score.toFixed(2),\n    audit_position: currentItemPosition,\n    expected_total: expectedTotalItems\n  });\n  \n  return { json: summary };\n}\n\n// Not the last item, return null to continue processing\nconsole.log(`Not last item (${currentItemPosition}/${expectedTotalItems}), continuing...`);\nreturn null;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1264,
+        672
+      ],
+      "id": "0ea7f656-ab46-47a2-b39c-6c363a753da7",
+      "name": "Detect Last Item & Stats1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has_next_condition",
+              "leftValue": "={{$json.has_next_page}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "next_url_condition",
+              "leftValue": "={{$json.next_url}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d4a22ac3-c8f3-41bf-b6d2-2b167af8fc37",
+      "name": "Has Next Page?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1040,
+        672
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "sync_status",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "batch_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.sync_batch_id }}"
+            }
+          ]
+        },
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "last_processed_page",
+              "fieldValue": "={{ $json.current_page }}"
+            },
+            {
+              "fieldId": "next_page_url",
+              "fieldValue": "={{ $json.next_url }}"
+            }
+          ]
+        }
+      },
+      "id": "ce83ab0b-52b9-4a46-be3f-cf2e7c813121",
+      "name": "Update Sync Status (Continue)1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -816,
+        576
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "UKAVWfqOUk0FNFVw",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fields": {
+          "values": [
+            {
+              "name": "batch_id",
+              "stringValue": "={{ $('Has Next Page?1').item.json.sync_batch_id }}"
+            },
+            {
+              "name": "base_url",
+              "stringValue": "https://r4.smarthealthit.org"
+            },
+            {
+              "name": "resource_type",
+              "stringValue": "Patient"
+            },
+            {
+              "name": "page_size",
+              "stringValue": "50"
+            },
+            {
+              "name": "current_page",
+              "stringValue": "={{ $('Has Next Page?1').item.json.current_page + 1 }}"
+            },
+            {
+              "name": "next_url",
+              "stringValue": "={{ $('Has Next Page?1').item.json.next_url }}"
+            },
+            {
+              "name": "is_continuation",
+              "stringValue": "true"
+            },
+            {
+              "name": "source_system",
+              "stringValue": "={{ $('Has Next Page?1').item.json.source_system }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9110cf34-044f-4ac9-9a97-f8bda4a485ef",
+      "name": "Setup Next Page1",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.2,
+      "position": [
+        -592,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "sync_status",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "end_time",
+              "fieldValue": "={{ new Date().toISOString() }}"
+            },
+            {
+              "fieldId": "total_records",
+              "fieldValue": "={{ $json.batch_statistics.total_items }}"
+            },
+            {
+              "fieldId": "successful_records",
+              "fieldValue": "={{ $json.batch_statistics.successful_records }}"
+            },
+            {
+              "fieldId": "failed_records",
+              "fieldValue": "={{ $json.batch_statistics.failed_records }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "completed"
+            },
+            {
+              "fieldId": "next_page_url",
+              "fieldValue": "={{ $json.next_url }}"
+            }
+          ]
+        }
+      },
+      "id": "8131bc45-a2c0-4650-afc5-4540e37fed36",
+      "name": "Complete Sync Status1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -816,
+        768
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "UKAVWfqOUk0FNFVw",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "pipeline_audit_log",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "operation_type",
+              "fieldValue": "operation_type"
+            },
+            {
+              "fieldId": "resource_type",
+              "fieldValue": "Patient"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "success"
+            },
+            {
+              "fieldId": "sync_batch_id",
+              "fieldValue": "={{ $json.sync_batch_id }}"
+            },
+            {
+              "fieldId": "metadata",
+              "fieldValue": "={{ $json.batch_statistics }}"
+            }
+          ]
+        }
+      },
+      "id": "17abb109-d798-42ed-a48b-2851da53ee6d",
+      "name": "Log Batch Completion1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -592,
+        768
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "UKAVWfqOUk0FNFVw",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "data_quality_metrics",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "date_period",
+              "fieldValue": "={{ new Date().toISOString().split('T')[0] }}"
+            },
+            {
+              "fieldId": "source_system",
+              "fieldValue": "={{ $json.source_system }}"
+            },
+            {
+              "fieldId": "total_records",
+              "fieldValue": "={{ $json.batch_statistics.total_items }}"
+            },
+            {
+              "fieldId": "avg_quality_score",
+              "fieldValue": "={{ $json.batch_statistics.avg_quality_score }}"
+            },
+            {
+              "fieldId": "high_quality_records",
+              "fieldValue": "={{ $json.batch_statistics.high_quality_items }}"
+            }
+          ]
+        }
+      },
+      "id": "c1555069-f327-4485-8b80-759fcaabe7af",
+      "name": "Update Quality Metrics1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -368,
+        864
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "UKAVWfqOUk0FNFVw",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 3,
+        "unit": "seconds"
+      },
+      "id": "fc892756-5802-4bf3-a14a-d5ffaa4fa082",
+      "name": "Rate Limit Delay1",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        -368,
+        672
+      ],
+      "webhookId": "cbb9cc1b-57ed-4d05-b12d-3d4d6109eb96"
+    },
+    {
+      "parameters": {
+        "fields": {
+          "values": [
+            {
+              "name": "batch_id",
+              "stringValue": "={{new Date().getTime()}}_{{Math.random().toString(36).substr(2, 9)}}"
+            },
+            {
+              "name": "base_url",
+              "stringValue": "https://r4.smarthealthit.org"
+            },
+            {
+              "name": "resource_type",
+              "stringValue": "Patient"
+            },
+            {
+              "name": "page_size",
+              "stringValue": "50"
+            },
+            {
+              "name": "current_page",
+              "stringValue": "1"
+            },
+            {
+              "name": "is_continuation"
+            },
+            {
+              "name": "source_system",
+              "stringValue": "smart_on_fhir"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a5d272c5-d1be-407d-93d3-898ea9969066",
+      "name": "Initialize Batch",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.2,
+      "position": [
+        -3280,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$json.is_continuation ? $json.next_url : $('Initialize Batch').item.json.base_url + '/' + $('Initialize Batch').item.json.resource_type + '?_count=' + $('Initialize Batch').item.json.page_size + '&_format=json'}}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 45000
+        }
+      },
+      "id": "28a078d6-e63f-49a0-9b19-742e13dcf4ab",
+      "name": "Fetch FHIR Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -2608,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "pipeline_audit_log",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "operation_type",
+              "fieldValue": "error"
+            },
+            {
+              "fieldId": "resource_type",
+              "fieldValue": "Patient"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "error"
+            },
+            {
+              "fieldId": "sync_batch_id",
+              "fieldValue": "={{ $json.sync_batch_id }}"
+            },
+            {
+              "fieldId": "error_details",
+              "fieldValue": "={{ { \"message\": $json.message, \"details\": $json.details } }}"
+            }
+          ]
+        }
+      },
+      "id": "d942d6b9-d290-408f-8948-7684f59c3189",
+      "name": "Log Errors & Completion",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -1712,
+        864
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "UKAVWfqOUk0FNFVw",
+          "name": "Supabase account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every 30 Minutes1": {
+      "main": [
+        [
+          {
+            "node": "Initialize Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Sync Status1": {
+      "main": [
+        [
+          {
+            "node": "Log Batch Start1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Batch Start1": {
+      "main": [
+        [
+          {
+            "node": "Fetch FHIR Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Bundle Entries1": {
+      "main": [
+        [
+          {
+            "node": "Transform & Validate Patient1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform & Validate Patient1": {
+      "main": [
+        [
+          {
+            "node": "Filter Errors & Completed1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Errors & Completed1": {
+      "main": [
+        [
+          {
+            "node": "Log Errors & Completion",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Insert Patients to Supabase1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Patients to Supabase1": {
+      "main": [
+        [
+          {
+            "node": "Audit Successful Records1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Successful Records1": {
+      "main": [
+        [
+          {
+            "node": "Detect Last Item & Stats1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Last Item & Stats1": {
+      "main": [
+        [
+          {
+            "node": "Has Next Page?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Next Page?1": {
+      "main": [
+        [
+          {
+            "node": "Update Sync Status (Continue)1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Complete Sync Status1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Sync Status (Continue)1": {
+      "main": [
+        [
+          {
+            "node": "Setup Next Page1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Setup Next Page1": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Delay1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Complete Sync Status1": {
+      "main": [
+        [
+          {
+            "node": "Log Batch Completion1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Batch Completion1": {
+      "main": [
+        [
+          {
+            "node": "Update Quality Metrics1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Delay1": {
+      "main": [
+        [
+          {
+            "node": "Fetch FHIR Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Batch": {
+      "main": [
+        [
+          {
+            "node": "Create Sync Status1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch FHIR Data": {
+      "main": [
+        [
+          {
+            "node": "Extract Bundle Entries1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "fc01e80e-56a7-4bfa-b1fb-898fa9d2d95a",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "372bf43443bea33ccb2f94eedaf65feb44b935daa786d8d26703e61f784707b4"
+  },
+  "id": "eFUPgQPFOfa1rLkg",
+  "tags": []
+}
